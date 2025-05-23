@@ -30,7 +30,7 @@ class TaxStructureVisualizer:
         # Add nodes for companies
         for company_id, company in state.companies.items():
             country = state.based_in.get(company_id, "Unknown")
-            managed = state.managed_from.get(company_id, country)
+            managed = state.managed.get(company_id, country)
             
             label = f"{company_id}\n{country}"
             if managed != country:
@@ -42,14 +42,14 @@ class TaxStructureVisualizer:
                       color=self.country_colors.get(country, "#gray"))
         
         # Add edges for ownership
-        for child_id, parent_id in state.parent_of.items():
+        for child_id, parent_id in state.is_child_of.items():
             G.add_edge(parent_id, child_id, 
                       relationship="owns",
                       style="solid",
                       width=2)
         
         # Add edges for IP licensing
-        for ip_id, (owner, renter) in state.rents_ip.items():
+        for owner, renter, ip_id in state.rents_ip:
             G.add_edge(owner, renter,
                       relationship=f"licenses {ip_id}",
                       style="dashed",
@@ -79,10 +79,10 @@ class TaxStructureVisualizer:
         labels = nx.get_node_attributes(G, 'label')
         nx.draw_networkx_labels(G, pos, labels, font_size=10)
         
-        # Add edge labels for licensing
+        # Add edge labels for all relationships
         edge_labels = {(u, v): d['relationship'] 
                       for u, v, d in G.edges(data=True) 
-                      if 'licenses' in d.get('relationship', '')}
+                      if 'relationship' in d}
         nx.draw_networkx_edge_labels(G, pos, edge_labels, font_size=8)
         
         plt.title("Corporate Structure and IP Flows", fontsize=16)
@@ -256,7 +256,7 @@ class LoopholeDetector:
             'num_countries': len(set(state.based_in.values())),
             'has_tax_haven': any(c in ['BM', 'LU', 'CH'] 
                                 for c in state.based_in.values()),
-            'managed_elsewhere': len(state.managed_from) > 0,
+            'managed_elsewhere': any(state.managed.get(c, state.based_in.get(c)) != state.based_in.get(c) for c in state.companies),
             'ip_transfers': len(state.rents_ip),
             'uses_treaty_network': self._check_treaty_usage(state)
         }
@@ -283,14 +283,14 @@ class LoopholeDetector:
                           if country == 'IE']
         
         for company in irish_companies:
-            if state.managed_from.get(company) == 'BM':
+            if state.managed.get(company) == 'BM':
                 return True
         return False
     
     def _has_dutch_sandwich(self, state) -> bool:
         """Check for Dutch Sandwich structure"""
         # Look for NL company in middle of IP flow
-        for ip, (owner, renter) in state.rents_ip.items():
+        for owner, renter, ip in state.rents_ip:
             owner_country = state.based_in.get(owner)
             renter_country = state.based_in.get(renter)
             
@@ -330,64 +330,59 @@ class LoopholeDetector:
 
 # Example usage
 def demonstrate_visualization():
-    """Demonstrate visualization capabilities"""
+    """Demonstrate visualization capabilities using discovered strategies"""
     from tax_loophole_detector import TaxSystem
     
     print("Tax Structure Visualization Demo")
     print("=" * 50)
     
-    # Create a complex structure
+    # Initialize system and find optimal strategies
     tax_system = TaxSystem()
-    state = tax_system.create_initial_state("TechCorp", "US")
+    initial_state = tax_system.create_initial_state("TechCorp", "US")
     
-    # Build Double Irish Dutch Sandwich structure
-    actions = [
-        # Irish subsidiary
-        {"type": "add_child", "params": {"parent": "C0", "country": "IE"}},
-        # Dutch subsidiary  
-        {"type": "add_child", "params": {"parent": "C0", "country": "NL"}},
-        # Bermuda management
-        {"type": "add_child", "params": {"parent": "C0", "country": "BM"}},
-        # Transfer IP to Irish company
-        {"type": "transfer_ip", "params": {"ip": "IP0", "from": "C0", "to": "C0_child_IE"}},
-        # License to Dutch company
-        {"type": "rent_ip", "params": {"ip": "IP0", "owner": "C0_child_IE", "renter": "C0_child_NL"}}
-    ]
+    print("\n1. Discovering tax optimization strategies...")
+    trajectories = tax_system.explore_plans(
+        initial_state,
+        max_depth=10,
+        num_samples=10000
+    )
     
-    # Apply actions
-    for action_data in actions:
-        from tax_loophole_detector import Action, ActionType
-        action = Action(
-            ActionType[action_data["type"].upper()],
-            action_data["params"],
-            "test"
-        )
-        state = tax_system.apply_action(state, action)
+    print(f"   Generated {len(trajectories)} strategies")
+    print(f"   Best utility: ${trajectories[0]['utility']:,.2f}")
+    print(f"   Worst utility: ${trajectories[-1]['utility']:,.2f}")
     
-    # Manually set Irish company as managed from Bermuda
-    state.managed_from["C0_child_IE"] = "BM"
+    # Get the best discovered strategy
+    best_strategy = trajectories[0]
+    best_state = best_strategy['state']
     
-    # Create visualizations
+    print(f"\n2. Analyzing best strategy (utility: ${best_strategy['utility']:,.2f}):")
+    print(f"   Strategy steps: {len(best_strategy['path'])}")
+    print("   Actions taken:")
+    for i, action in enumerate(best_strategy['path'], 1):
+        print(f"     {i}. {action.type.value}: {action.params} (using {action.legal_ref})")
+    
+    # Create visualizations using the discovered strategy
     visualizer = TaxStructureVisualizer()
     
-    print("\n1. Creating corporate structure visualization...")
-    fig1 = visualizer.visualize_corporate_structure(state)
+    print("\n3. Creating corporate structure visualization of best strategy...")
+    transactions = tax_system.calculate_transactions(best_state)
+    taxes = tax_system.calculate_taxes(best_state, transactions)
+    
+    fig1 = visualizer.visualize_corporate_structure(best_state, transactions)
     plt.savefig('corporate_structure.png', dpi=150, bbox_inches='tight')
     print("   Saved as 'corporate_structure.png'")
     
-    print("\n2. Generating sample trajectories for analysis...")
-    trajectories = tax_system.explore_plans(
-        tax_system.create_initial_state("TechCorp", "US"),
-        max_depth=8,
-        num_samples=200
-    )
-    
-    print("\n3. Creating utility profile visualization...")
+    print("\n4. Creating utility profile visualization...")
     fig2 = visualizer.plot_utility_profile(trajectories)
     plt.savefig('utility_profile.png', dpi=150, bbox_inches='tight')
     print("   Saved as 'utility_profile.png'")
     
-    print("\n4. Analyzing loophole patterns...")
+    print("\n5. Creating tax flow diagram...")
+    fig3 = visualizer.create_tax_flow_diagram(best_state, transactions, taxes)
+    plt.savefig('tax_flow_diagram.png', dpi=150, bbox_inches='tight')
+    print("   Saved as 'tax_flow_diagram.png'")
+    
+    print("\n6. Analyzing loophole patterns...")
     detector = LoopholeDetector(tax_system)
     anomalous = detector.find_anomalous_structures(trajectories, threshold_percentile=80)
     
@@ -397,10 +392,32 @@ def demonstrate_visualization():
         print(f"Top structure achieves {top_structure['savings_ratio']:.2f}x median utility")
         print(f"Features: {top_structure['features']}")
     
-    print("\n5. Policy recommendations:")
+    print("\n7. Policy recommendations:")
     recommendations = detector.generate_policy_recommendations(anomalous)
     for i, rec in enumerate(recommendations, 1):
         print(f"   {i}. {rec}")
+    
+    print(f"\n8. Best strategy details:")
+    print("   Corporate structure:")
+    for company_id, country in best_state.based_in.items():
+        managed = best_state.managed.get(company_id, country)
+        managed_note = f", Managed in {managed}" if managed != country else ""
+        print(f"     {company_id}: Based in {country}{managed_note}")
+    
+    if best_state.rents_ip:
+        print("   IP licensing chain:")
+        for owner, renter, ip_id in best_state.rents_ip:
+            owner_country = best_state.based_in.get(owner, "?")
+            renter_country = best_state.based_in.get(renter, "?")
+            print(f"     {ip_id}: {owner} ({owner_country}) -> {renter} ({renter_country})")
+    
+    print(f"\n   Tax efficiency:")
+    simple_utility = tax_system.calculate_utility(initial_state, 0)
+    print(f"     Simple structure: ${simple_utility:,.2f}")
+    print(f"     Optimized structure: ${best_strategy['utility']:,.2f}")
+    print(f"     Tax savings: ${best_strategy['utility'] - simple_utility:,.2f}")
+    
+    plt.close('all')  # Clean up matplotlib figures
 
 
 if __name__ == "__main__":

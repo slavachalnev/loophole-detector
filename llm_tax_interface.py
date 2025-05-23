@@ -275,35 +275,3 @@ EXAMPLE_PROMPTS = {
 }
 
 
-# Demonstration of LLM-enhanced capabilities
-def demonstrate_llm_features():
-    """Show how modern LLMs enhance the tax planning system"""
-    
-    print("LLM-Enhanced Tax Planning System")
-    print("=" * 50)
-    
-    # Note: In real usage, you would provide actual API keys
-    # llm = ModernLLMInterface(provider="openai", api_key="your-api-key")
-    
-    print("\n1. Natural Language Company Setup")
-    print(f"Input: {EXAMPLE_PROMPTS['initial_state']}")
-    # state = llm.create_initial_state_from_description(EXAMPLE_PROMPTS['initial_state'])
-    # print(f"Parsed state: {json.dumps(state, indent=2)}")
-    
-    print("\n2. Formalizing Tax Rules from Legal Text")
-    print(f"Input: {EXAMPLE_PROMPTS['tax_rule'][:100]}...")
-    # rule = llm.formalize_tax_rule(EXAMPLE_PROMPTS['tax_rule'], "exemption")
-    # print(f"Formal rule: {json.dumps(rule, indent=2)}")
-    
-    print("\n3. Policy Impact Analysis")
-    print(f"Proposed change: {EXAMPLE_PROMPTS['policy_change']}")
-    # impact = analyze_policy_change(EXAMPLE_PROMPTS['policy_change'])
-    # print(f"Expected impact: Close loopholes worth ${impact['revenue_impact']:,.2f}")
-    
-    print("\n4. Interactive Planning Session")
-    print("User: 'I have a US company with $100M in software licensing revenue.'")
-    print("      'What's the most tax-efficient way to expand to Europe?'")
-    print("\nSystem: Analyzing tax planning opportunities...")
-    print("        Found strategy: Double Irish with Dutch Sandwich")
-    print("        Estimated savings: $15.7M annually")
-    print("        Risk level: High (likely to face scrutiny)")

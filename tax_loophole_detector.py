@@ -29,18 +29,18 @@ class State:
     """Represents the current state of corporate structure"""
     companies: Dict[str, Company] = field(default_factory=dict)
     based_in: Dict[str, str] = field(default_factory=dict)  # company_id -> country_code
-    managed_from: Dict[str, str] = field(default_factory=dict)  # company_id -> country_code
-    parent_of: Dict[str, str] = field(default_factory=dict)  # child_id -> parent_id
+    managed: Dict[str, str] = field(default_factory=dict)  # company_id -> country_code (where managed)
+    is_child_of: Dict[str, str] = field(default_factory=dict)  # child_id -> parent_id
     owns_ip: Dict[str, str] = field(default_factory=dict)  # ip_id -> company_id
-    rents_ip: Dict[str, Tuple[str, str]] = field(default_factory=dict)  # ip_id -> (owner_id, renter_id)
+    rents_ip: List[Tuple[str, str, str]] = field(default_factory=list)  # [(owner_id, renter_id, ip_id)]
     
     def copy(self):
         """Create a deep copy of the state"""
         return State(
             companies=self.companies.copy(),
             based_in=self.based_in.copy(),
-            managed_from=self.managed_from.copy(),
-            parent_of=self.parent_of.copy(),
+            managed=self.managed.copy(),
+            is_child_of=self.is_child_of.copy(),
             owns_ip=self.owns_ip.copy(),
             rents_ip=self.rents_ip.copy()
         )
@@ -102,6 +102,7 @@ class TaxSystem:
         state = State()
         state.companies["C0"] = Company("C0", parent_company)
         state.based_in["C0"] = parent_country
+        state.managed["C0"] = parent_country  # Managed in same country by default
         state.owns_ip["IP0"] = "C0"
         return state
         
@@ -122,7 +123,7 @@ class TaxSystem:
         # Rent IP actions
         for ip_id, owner_id in state.owns_ip.items():
             for company_id in state.companies:
-                if company_id != owner_id and ip_id not in state.rents_ip:
+                if company_id != owner_id and not any(ip == ip_id for _, _, ip in state.rents_ip):
                     actions.append(Action(
                         ActionType.RENT_IP,
                         {"ip": ip_id, "owner": owner_id, "renter": company_id},
@@ -131,7 +132,7 @@ class TaxSystem:
         
         # Transfer IP actions (limited to prevent cycles)
         for ip_id, owner_id in state.owns_ip.items():
-            if not any(owner_id in t for t in state.rents_ip.values()):
+            if not any(owner_id == owner for owner, _, _ in state.rents_ip):
                 for company_id in state.companies:
                     if company_id != owner_id:
                         actions.append(Action(
@@ -153,17 +154,19 @@ class TaxSystem:
             
             new_state.companies[child_id] = Company(child_id, f"Subsidiary in {country}")
             new_state.based_in[child_id] = country
-            new_state.parent_of[child_id] = parent_id
+            new_state.is_child_of[child_id] = parent_id
             
             # Special rules for certain jurisdictions
             if country == "IE" and random.random() < 0.5:  # Irish company managed from Bermuda
-                new_state.managed_from[child_id] = "BM"
+                new_state.managed[child_id] = "BM"
+            else:
+                new_state.managed[child_id] = country  # Managed in same country by default
                 
         elif action.type == ActionType.RENT_IP:
             ip_id = action.params["ip"]
             owner = action.params["owner"]
             renter = action.params["renter"]
-            new_state.rents_ip[ip_id] = (owner, renter)
+            new_state.rents_ip.append((owner, renter, ip_id))
             
         elif action.type == ActionType.TRANSFER_IP:
             ip_id = action.params["ip"]
@@ -182,7 +185,7 @@ class TaxSystem:
             if country in self.countries and self.countries[country].revenue_potential > 0:
                 # Check if company has IP access
                 has_ip = any(state.owns_ip.get(ip) == company_id for ip in state.owns_ip)
-                rents_ip = any(state.rents_ip.get(ip, ("", ""))[1] == company_id for ip in state.rents_ip)
+                rents_ip = any(renter == company_id for _, renter, _ in state.rents_ip)
                 
                 if has_ip or rents_ip:
                     transactions.append(Transaction(
@@ -195,7 +198,7 @@ class TaxSystem:
                     tx_id += 1
         
         # Licensing fees (90% of licensee revenue)
-        for ip_id, (owner, renter) in state.rents_ip.items():
+        for owner, renter, ip_id in state.rents_ip:
             renter_revenue = sum(t.amount for t in transactions if t.receiver == renter)
             if renter_revenue > 0:
                 transactions.append(Transaction(
@@ -244,9 +247,9 @@ class TaxSystem:
                                 effective_rate = min(effective_rate, 0.05)
                                 applied_reductions.append("DCITA1969")
                 
-                # Check for check-the-box rules
+                # Check for check-the-box rules  
                 if country == "US":
-                    managed_elsewhere = company_id in state.managed_from
+                    managed_elsewhere = state.managed.get(company_id, country) != country
                     if managed_elsewhere:
                         effective_rate = 0.0
                         applied_reductions.append("check-the-box")
@@ -348,7 +351,7 @@ class TaxSystem:
         """Check if state represents Double Irish Dutch Sandwich structure"""
         # Look for: Irish company managed from Bermuda, Dutch intermediary
         irish_bermuda = any(
-            state.based_in.get(c) == "IE" and state.managed_from.get(c) == "BM"
+            state.based_in.get(c) == "IE" and state.managed.get(c) == "BM"
             for c in state.companies
         )
         
@@ -356,8 +359,8 @@ class TaxSystem:
         
         # Check for IP flow through Netherlands
         nl_in_ip_chain = any(
-            state.based_in.get(state.rents_ip.get(ip, ("", ""))[1]) == "NL"
-            for ip in state.rents_ip
+            state.based_in.get(renter) == "NL"
+            for _, renter, _ in state.rents_ip
         )
         
         return irish_bermuda and has_dutch and nl_in_ip_chain
@@ -431,11 +434,11 @@ def demonstrate_system():
     
     print("\nCorporate structure:")
     for company_id, country in state.based_in.items():
-        managed = state.managed_from.get(company_id, country)
-        print(f"  {company_id}: Based in {country}, Managed from {managed}")
+        managed = state.managed.get(company_id, country)
+        print(f"  {company_id}: Based in {country}, Managed in {managed}")
     
     print("\nIP licensing chain:")
-    for ip_id, (owner, renter) in state.rents_ip.items():
+    for owner, renter, ip_id in state.rents_ip:
         owner_country = state.based_in.get(owner, "?")
         renter_country = state.based_in.get(renter, "?")
         print(f"  {ip_id}: {owner} ({owner_country}) -> {renter} ({renter_country})")
